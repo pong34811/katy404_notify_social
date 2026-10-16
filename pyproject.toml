@@ -1,0 +1,25 @@
+[project]
+name = "katy404-notify-social"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "Django>=5.2,<5.3",
+    "requests>=2.32,<3",
+    "requests-toolbelt>=1,<2",
+    "python-dotenv>=1,<2",
+    "filelock>=3.16,<4",
+    "waitress>=3,<4",
+    "tzdata>=2025.1",
+    "yt-dlp>=2026.8.19",
+]
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-django>=4.9,<5", "responses>=0.25,<1", "pytest-socket>=0.7,<1", "ruff>=0.9,<1", "imageio-ffmpeg>=0.6,<1"]
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py"]
+addopts = "--disable-socket"
+[tool.ruff]
+line-length = 100
+exclude = ["social/migrations", ".hermes"]
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
