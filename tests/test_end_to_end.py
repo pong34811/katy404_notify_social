@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+from datetime import timedelta
 from urllib.parse import parse_qs, urlsplit
 
 import imageio_ffmpeg
@@ -10,6 +11,7 @@ import pytest
 import responses
 from django.core.files import File
 from django.core.management import call_command
+from django.utils import timezone
 
 from social.models import PublishJob, Video
 
@@ -101,6 +103,18 @@ def test_real_original_complete_offline_publishing_lifecycle(bundle, monkeypatch
     horizontal = Video.objects.get(pk="c" * 11)
     horizontal.landscape_confirmed = horizontal.rights_confirmed = True
     horizontal.save()
+    PublishJob.objects.create(
+        video=vertical,
+        page=bundle.page,
+        kind="video",
+        scheduled_at=timezone.now() - timedelta(minutes=1),
+    )
+    PublishJob.objects.create(
+        video=horizontal,
+        page=bundle.page,
+        kind="photo",
+        scheduled_at=timezone.now() - timedelta(minutes=1),
+    )
     responses.post("https://graph-video.facebook.com/v26.0/123/videos", json={"id": "456"})
     responses.post(
         "https://graph.facebook.com/v26.0/123/photos", json={"id": "789", "post_id": "123_789"}

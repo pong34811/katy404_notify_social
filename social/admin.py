@@ -182,7 +182,17 @@ class VideoAdmin(OperationalAdmin):
 
 @admin.register(PublishJob)
 class JobAdmin(OperationalAdmin):
-    list_display = ("id", "video", "page", "kind", "state", "remote_id", "error_code", "updated_at")
+    list_display = (
+        "id",
+        "video",
+        "page",
+        "kind",
+        "scheduled_at",
+        "state",
+        "remote_id",
+        "error_code",
+        "updated_at",
+    )
     list_filter = ("state", "kind", "page")
     search_fields = ("video__video_id", "remote_id")
     exclude = ("remote_url",)

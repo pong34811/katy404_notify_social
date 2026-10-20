@@ -54,6 +54,7 @@ class Video(models.Model):
         READY_PHOTO = "ready_photo", "Ready for photo notification"
         REJECTED = "rejected", "Unsupported media"
         NEEDS_REVIEW = "needs_review", "Route changed: needs review"
+        SCHEDULED = "scheduled", "Scheduled on Facebook"
         PUBLISHED = "published", "All configured Facebook deliveries verified"
 
     video_id = models.CharField(primary_key=True, max_length=11, validators=[video_id_validator])
@@ -100,6 +101,7 @@ class PublishJob(models.Model):
         PENDING = "pending", "Pending"
         SENDING = "sending", "Sending"
         VERIFYING = "verifying", "Verifying"
+        SCHEDULED = "scheduled", "Scheduled on Facebook"
         SUCCEEDED = "succeeded", "Remote object verified (visibility requires manual check)"
         NEEDS_REVIEW = "needs_review", "Needs review; do not resend"
         BLOCKED = "blocked", "Blocked"
@@ -107,6 +109,7 @@ class PublishJob(models.Model):
     video = models.ForeignKey(Video, on_delete=models.PROTECT)
     page = models.ForeignKey(Page, on_delete=models.PROTECT)
     kind = models.CharField(max_length=10, choices=Kind.choices)
+    scheduled_at = models.DateTimeField(null=True, blank=True, db_index=True)
     state = models.CharField(max_length=20, choices=State.choices, default=State.PENDING)
     remote_id = models.CharField(max_length=100, blank=True)
     remote_url = models.URLField(max_length=2000, blank=True)

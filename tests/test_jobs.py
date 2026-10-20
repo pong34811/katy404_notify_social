@@ -346,6 +346,12 @@ def test_cleanup_batch_respects_worker_limit_before_dispatch(bundle, monkeypatch
         rights_confirmed=True,
         file_matches_video=True,
     )
+    PublishJob.objects.create(
+        video=pending_video,
+        page=bundle.page,
+        kind="video",
+        scheduled_at=timezone.now() - timedelta(minutes=1),
+    )
     from django.core.files.base import ContentFile
 
     pending_video.original.save("next.mp4", ContentFile(b"fixture"))

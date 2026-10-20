@@ -2,9 +2,9 @@
 
 ## สถานะและขอบเขต
 
-- ค่าเริ่มต้น `LIVE_PUBLISH=0`, Page `auto_publish=False`; smoke test จริงผ่านแล้วหนึ่งครั้งสำหรับ photo post แนวนอนเท่านั้น ยังไม่มีการเปิดใช้งานต่อเนื่องหรือลงทะเบียน Windows scheduled tasks
+- ค่าเริ่มต้นสำหรับการติดตั้งใหม่คือ `LIVE_PUBLISH=0` และ Page `auto_publish=False`. ตรวจเครื่องนี้เมื่อ 2026-10-19 พบ `LIVE_PUBLISH=1`, Page `auto_publish=True`; ลบ Windows tasks `Katy404 Process`/`Katy404 Scan` แล้ว และเริ่ม backend scheduler ด้วย `manage.py run_scheduler --publish --process-interval 60`; process นี้ไม่เริ่มใหม่เองหลัง reboot/logoff
 - Facebook post ของคลิป `9KETfCikPB4` ผ่าน GET readback ตรวจ exact object ID/owner, caption ตรง format และมี photo attachment หนึ่งไฟล์; remote ID `1367371476460961_122094772071519387`
-- คลิปแนวตั้ง `3OGs8nDiXrk` ยังไม่ได้ทดสอบอัปโหลดเพราะไม่มีไฟล์ต้นฉบับ; Page auto publish ถูกปิดกลับหลัง smoke test
+- คลิปแนวตั้ง `3OGs8nDiXrk` ยังไม่ได้ทดสอบอัปโหลดเพราะไม่มีไฟล์ต้นฉบับ; หลัง smoke test เคยปิด Page auto publish ก่อนเปิดใช้งานภายหลังตามสถานะข้างต้น
 - Offline tests ใช้ข้อมูลจำลองและปิด sockets ไม่ใช่หลักฐานว่า token/API/permissions จริงใช้ได้ ต้องให้ผู้ใช้เตรียม credentials ใน `.env`/environment เอง ห้ามส่งค่าลับผ่านแชตหรือบันทึก raw API response
 - SQLite และ `media/` อยู่ local disk ไม่ใช้ network share ใช้ worker เพียงหนึ่งตัว; scan/process/reconcile/Admin write ใช้ file lock เดียวกัน ไม่ใช้ SQLite `select_for_update()` แทน interprocess lock
 
@@ -59,7 +59,7 @@ Admin เป็น staff-only + CSRF; Page ID immutable หลังสร้า
 
 Timeout, 429/5xx หลังเริ่ม POST หรือ worker crash ไม่พิสูจน์ว่าฝั่ง Facebook ไม่รับข้อมูล ระบบจึงหยุด `needs_review` การเริ่ม worker ใหม่ไม่อนุญาต POST ซ้ำ ไม่มี distributed exactly-once guarantee
 
-1. คง `LIVE_PUBLISH=0`/ปิด Page auto publish และหยุด scheduled tasks; รอ worker ที่ทำงานอยู่จบก่อน ห้าม hard-kill ระหว่าง upload
+1. คง `LIVE_PUBLISH=0`/ปิด Page auto publish และหยุด backend scheduler; รอ worker ที่ทำงานอยู่จบก่อน ห้าม hard-kill ระหว่าง upload
 2. จด job ID, video ID, Page และเวลาที่ส่งจาก Admin โดยไม่คัดลอก credentials
 3. เปิด Page จริง ตรวจว่ามี remote object อยู่หรือไม่ และดู **เนื้อหาจริง** ไม่ใช่แค่ ID/owner: video/link ต้องตรงคลิปและ YouTube URL ใน caption; photo ต้องตรงรูปปก ชื่อ และแท็กหนึ่งบรรทัดข้างต้น **ไม่บังคับเติม URL ลง photo**
 4. ถ้าพบแน่นอน ให้ระบุ remote ID ของ object นั้น (photo ใช้ **Page post `post_id` ไม่ใช่ photo object `id`**) แทน placeholders ด้านล่าง:
@@ -91,37 +91,21 @@ uv run python manage.py process_jobs --publish --limit 1
 5. คนเปิด exact object ตรวจ owner/content/caption/เสียงและ public visibility; รัน worker อีกครั้งและตรวจว่าไม่เกิดโพสต์ซ้ำ สำหรับ photo ต้องแยกอนุมัติ smoke เพิ่มและตรวจมีรูปจริงหนึ่งโพสต์ ไม่มี video upload/URL
 6. บันทึกผลจริงที่ตัดข้อมูลลับ: remote ID + permalink ปกติ + เวลาตรวจ + visibility ไม่เก็บ signed source URL/raw response ตั้ง `LIVE_PUBLISH=0` และ Page `auto_publish=False` กลับหลังทดสอบ จนผู้ใช้อนุญาตงานประจำวัน
 
-## Windows wrappers และ Task Scheduler (คำแนะนำเท่านั้น)
+## Backend scheduler
 
-ยังไม่สร้าง/ลงทะเบียน/enable/launch tasks ให้ Wrappers ใช้ `.venv\Scripts\python.exe`, เปลี่ยน cwd เป็น project root, ต่อ log ใน `.runtime\scan.log`/`process.log` และคืน exit code ของ command ไม่ฝังค่า secret
+`manage.py run_scheduler` เรียก `scan_channels --force` และ `process_jobs` ทันทีเมื่อเริ่ม จากนั้น scan ทุกชั่วโมงและ process ทุก 60 วินาที รันเป็น process เดียวแยกจากเว็บเซิร์ฟเวอร์ วิดีโอที่มีเวลาเผยแพร่ล่วงหน้า 10 นาทีถึง 29 วันจะถูกอัปโหลดไป Facebook ด้วย `published=false` และ `scheduled_publish_time` แล้วตรวจ ID เจ้าของเพจและเวลาจริงก่อนนับเป็น `scheduled`; งานที่ไกลกว่า 29 วันจะรอใน backend จนเข้าสู่ช่วงดังกล่าว แม้ Page Videos API reference ระบุช่วงที่ยาวกว่า แต่เพจนี้ยืนยันการตั้งเวลาได้ถึง 29 วันและปฏิเสธรายการถัดไป จึงใช้ช่วงที่ตรวจพบจริง งานที่ถึงเวลาแล้วโดยยังไม่ถูกส่งให้ Meta จะเผยแพร่ในรอบ worker นั้นและจะไม่ถูกส่งก่อน `scheduled_at` งานที่ไม่มี `scheduled_at` จะไม่ถูกดาวน์โหลดหรือเผยแพร่:
 
-**`scripts\process.cmd` เป็น preview โดยค่าเริ่มต้น**; หลังผ่าน live gate และได้รับอนุมัติต้องส่ง `--publish` ชัดเจน Wrapper รองรับ `%*`; scan ส่ง `--force` ได้เมื่อจำเป็น
-
-Task Scheduler GUI:
-
-- `Katy404 Scan`: Daily 09:00 ตรวจ Windows timezone เป็น **SE Asia Standard Time (Asia/Bangkok, UTC+07:00)**
-- `Katy404 Process`: Repeat every 5 minutes, indefinite. เริ่มจาก preview เท่านั้น
-- Program ทั้งคู่: `C:\Windows\System32\cmd.exe`
-- Start in ทั้งคู่: `C:\Users\win01\Desktop\Projects\katy404_notify_social`
-- Arguments scan:
-
-```text
-/d /c ""C:\Users\win01\Desktop\Projects\katy404_notify_social\scripts\scan.cmd""
+```powershell
+.venv\Scripts\python.exe manage.py run_scheduler
 ```
 
-- Arguments process สำหรับ preview:
+คำสั่งนี้เป็น preview โดยค่าเริ่มต้น หากเปิด live publishing และอนุมัติให้ทำงานต่อเนื่อง ให้เพิ่ม `--publish`; ต้องผ่าน gate `LIVE_PUBLISH=1`, Page `auto_publish=True` และการยืนยันสิทธิ์/ไฟล์ที่กำหนดครบทุกข้อ การเปิด `--publish` เพียงอย่างเดียวไม่ข้าม gate เหล่านี้
 
-```text
-/d /c ""C:\Users\win01\Desktop\Projects\katy404_notify_social\scripts\process.cmd""
+```powershell
+.venv\Scripts\python.exe manage.py run_scheduler --publish --process-interval 60
 ```
 
-- หลังผู้ใช้อนุมัติ live ต่อเนื่องเท่านั้น เปลี่ยน arguments process เป็น:
-
-```text
-/d /c ""C:\Users\win01\Desktop\Projects\katy404_notify_social\scripts\process.cmd" --publish"
-```
-
-ทั้งคู่เลือก **Do not start a new instance** และ **Run task as soon as possible after a scheduled start is missed** ใช้บัญชีเครื่องที่เข้าถึงโครงการ/env/private files ได้ ห้ามตั้ง hard-kill worker ระหว่าง upload; shared lock กัน scan/process ชนกัน `worker_busy` เป็น safe skip ถ้าเกิดติดกันหลายรอบให้ตรวจ log/worker ไม่ลบ lock ขณะใช้งานหรือเพิ่ม worker ชดเชย ถ้า scan พลาดเวลาให้รัน `scan_channels --force` หลัง lock ว่าง ไม่ได้สแกนแค่คลิปเมื่อวาน
+เก็บ process นี้ไว้หนึ่งตัวในเครื่องและตรวจ output/log สม่ำเสมอ; `runserver`/Waitress ไม่ได้เริ่ม scheduler ให้เอง งานที่ Meta ยอมรับเป็น scheduled แล้วจะเผยแพร่ต่อได้แม้ backend หยุด แต่ backend ต้องทำงานต่อเพื่ออัปโหลดรายการที่ยังอยู่นอกช่วงเวลา 29 วัน เมื่อต้องหยุด ให้รอคำสั่ง scan/process รอบปัจจุบันจบก่อนแล้วจึงกด Ctrl+C ห้าม hard-kill ระหว่าง HTTP upload เพราะผลอาจกลายเป็น `needs_review` และห้ามส่งซ้ำจนกว่าจะตรวจว่าไม่มีรายการนั้นใน Scheduled
 
 ## Retention และ maintenance
 
@@ -129,11 +113,11 @@ Task Scheduler GUI:
 
 ถ้าต้องหยุดทั้งระบบเกิน 30 วัน ให้จัด maintenance ล้าง metadata เก่าก่อนกลับมาแสดง/ใช้งาน ไม่ใช้ข้อมูลเก่าทดแทน source check ไม่แก้/ลบ remote Facebook post ตามการเปลี่ยน title/privacy ต้นทางอัตโนมัติ
 
-Original ของ native video จะถูกลบจาก private storage **หลัง video job และทุก delivery job ที่ตั้งค่าไว้บน Page ของคลิปเดียวกันผ่าน exact-object readback เป็น `succeeded` แล้วเท่านั้น**; HTTP POST/ID ที่ยัง verifying/needs_review ไม่ทำให้ลบ หากไฟล์ลบติด lock/permission ระบบคง DB reference ไว้และลอง cleanup ใน worker รอบถัดไปโดยไม่ POST ซ้ำ Link job ที่ยัง pending ต้องสำเร็จก่อนจึงลบได้ Horizontal photo post ไม่ลบ video original ที่แนบไว้เพราะไม่ได้อัปโหลดไฟล์นั้นเอง การแทนที่ original ก่อนสำเร็จอาจทิ้ง orphan file; สำรองแยกก่อนเผยแพร่ถ้าต้องเก็บต้นฉบับ เพราะ cleanup หลัง verified เป็น irreversible
+Original ของ native video จะถูกลบจาก private storage **หลัง Meta ยืนยัน remote video ว่ากำหนดเวลาและเพจถูกต้อง หรือหลังเผยแพร่จริงผ่าน exact-object readback แล้ว**; HTTP POST/ID ที่ยัง verifying/needs_review ไม่ทำให้ลบ หากไฟล์ลบติด lock/permission ระบบคง DB reference ไว้และลอง cleanup ใน worker รอบถัดไปโดยไม่ POST ซ้ำ Link job ที่ยัง pending ต้องสำเร็จก่อนจึงลบได้ Horizontal photo post ไม่ลบ video original ที่แนบไว้เพราะไม่ได้อัปโหลดไฟล์นั้นเอง หาก Meta ยกเลิก/ไม่เผยแพร่ภายหลัง การกู้คืนไฟล์ต้องดาวน์โหลดต้นฉบับใหม่จาก YouTube
 
 ## Backup และ restore
 
-**หยุด web server และ scheduled tasks ทั้งหมด รอ worker จบก่อน** lock ป้องกันงาน worker ได้ แต่ต้องหยุด web เพื่อให้ DB+media เป็น snapshot เดียว ไม่ copy ไฟล์ SQLite ที่กำลังเขียนด้วย filesystem copy แทน backup API
+**หยุด web server และ backend scheduler ทั้งหมด รอ worker จบก่อน** lock ป้องกันงาน worker ได้ แต่ต้องหยุด web เพื่อให้ DB+media เป็น snapshot เดียว ไม่ copy ไฟล์ SQLite ที่กำลังเขียนด้วย filesystem copy แทน backup API
 
 ```bash
 uv run python manage.py backup_state --output 'C:/Users/win01/Desktop/Projects/katy404_notify_social/backups/manual-snapshot-001'
@@ -145,9 +129,9 @@ Restore rehearsal: ใช้ **สำเนา workspace แยกที่ไ�
 
 ## สถานะ verification ของ development workspace
 
-ตรวจแล้ว: `uv run pytest -q` → 324 passed; มี offline end-to-end ทดสอบไฟล์ portrait MP4 ที่สร้างในเครื่องผ่าน ffprobe จริง แต่ YouTube/Facebook HTTP ถูก mock และ pytest ปิด sockets; `uv run ruff check .` และ `uv run ruff format --check .` ผ่าน; Django check ไม่มี issue; migration check `No changes detected`; Admin ได้ login HTML/CSRF และ static CSS ตอบ 200 ขณะที่ `/private-media/...` ตอบ 404; wrapper tests รันกับ Windows `cmd.exe` fixture; backup command สร้าง SQLite snapshot จริงและ `PRAGMA integrity_check` ตอบ `ok`.
+ตรวจแล้ว: `uv run pytest -q` → 347 passed; มี offline end-to-end ทดสอบไฟล์ portrait MP4 ที่สร้างในเครื่องผ่าน ffprobe จริง แต่ YouTube/Facebook HTTP ถูก mock และ pytest ปิด sockets; `uv run ruff check .` และ `uv run ruff format --check .` ผ่าน; Django check ไม่มี issue; migration check `No changes detected`; Admin ได้ login HTML/CSRF และ static CSS ตอบ 200 ขณะที่ `/private-media/...` ตอบ 404; wrapper tests รันกับ Windows `cmd.exe` fixture; backup command สร้าง SQLite snapshot จริงและ `PRAGMA integrity_check` ตอบ `ok`.
 
-นี่เป็นผลทดสอบในเครื่อง ไม่ได้ทดสอบ credentials/API/Meta review/visibility ภายนอก ไม่มีโพสต์จริงและไม่มี scheduled tasks ที่เปิดใช้งาน
+นี่เป็นผลทดสอบในเครื่อง ไม่ได้ทดสอบ credentials/API/Meta review/visibility ภายนอก ชุดทดสอบ offline ไม่ได้ส่งโพสต์จริง; ตารางเวลาของเครื่องนี้ใช้ backend scheduler ตามสถานะข้างต้น ไม่ได้ใช้ Windows Scheduled Tasks
 
 ## Local serving และตรวจหลังอัปเดต
 

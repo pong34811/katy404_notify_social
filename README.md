@@ -4,7 +4,7 @@ Django Admin + SQLite สำหรับตรวจคลิปสาธาร�
 
 **ดาวน์โหลด MP4 อัตโนมัติ (ปิดเป็นค่าเริ่มต้น):** ตั้ง `YT_DOWNLOAD=1` ใน `.env` เพื่อให้ worker ใช้ yt-dlp (ไม่ใช้ cookies, ไม่ใช้ `YOUTUBE_API_KEY`) โหลดคลิป**แนวตั้ง**ใหม่ของช่องที่ `enabled` + `ownership_confirmed` และ Page เปิด `auto_publish` เท่านั้น คลิปแนวนอนไม่โหลด (อ่านขนาดจากเมตาดาตา แล้วส่งเป็น photo post) คลิป baseline ไม่ถูกโหลด ล้มเหลวจะลองใหม่ได้ทุก 1 ชั่วโมง หลังโพสต์ผ่านการอ่านกลับจาก Facebook ระบบลบ MP4 เอง ความเสี่ยง: นโยบาย YouTube API ห้ามดาวน์โหลด/เก็บสำเนา audiovisual content โดยไม่มีหนังสืออนุมัติ[1] และ ToS ของ YouTube อาจจำกัดการดาวน์โหลดนอกเหนือ Studio[2] ใช้กับช่องของคุณเองและยอมรับความเสี่ยงเอง ทางปลอดภัยกว่าคือดาวน์โหลดผ่าน YouTube Studio แล้วแนบใน Admin
 
-**ค่าเริ่มต้นปิดการเผยแพร่จริง** (`LIVE_PUBLISH=0`, Page `auto_publish=False`) และ `process_jobs` เป็น preview เท่านั้น ทดสอบจริงแล้วสำหรับคลิปแนวนอนหนึ่งคลิป: Facebook Page ได้รับ photo post หนึ่งรายการ และตรวจยืนยัน owner, caption และไฟล์แนบผ่าน readback; ยังไม่ได้ทดสอบอัปโหลดวิดีโอแนวตั้งเพราะยังไม่มีไฟล์ต้นฉบับ ไม่มี scheduler หรือการ deploy ภายนอก
+**ค่าเริ่มต้นปิดการเผยแพร่จริง** (`LIVE_PUBLISH=0`, Page `auto_publish=False`) และ `process_jobs` เป็น preview เท่านั้น ทดสอบจริงแล้วสำหรับคลิปแนวนอนหนึ่งคลิป: Facebook Page ได้รับ photo post หนึ่งรายการ และตรวจยืนยัน owner, caption และไฟล์แนบผ่าน readback; ยังไม่ได้ทดสอบอัปโหลดวิดีโอแนวตั้งเพราะยังไม่มีไฟล์ต้นฉบับ
 
 ## เริ่มใช้ในเครื่อง (Windows + Git Bash)
 
@@ -19,6 +19,8 @@ uv run python manage.py runserver 127.0.0.1:8000
 ```
 
 เปิด <http://127.0.0.1:8000/admin/> ใช้บัญชี staff/superuser; `runserver` ใช้พัฒนาในเครื่องเท่านั้น อย่า bind `0.0.0.0` หรือเปิดพอร์ตสู่ภายนอก
+
+ตัว scheduler ทำงานเป็น Django management command แยกจากเว็บเซิร์ฟเวอร์: รัน `uv run python manage.py run_scheduler` ใน terminal อีกหน้าต่างเพื่อ preview หรือเติม `--publish` เมื่ออนุมัติ live publishing แล้ว คำสั่งจะ scan ทันที จากนั้น scan ทุกชั่วโมงและ process คิวทุก 60 วินาที วิดีโอที่อยู่ในช่วงเวลาที่ Meta รับได้จะอัปโหลดเป็นโพสต์กำหนดเวลาใน Facebook; รายการที่ไกลกว่านั้นจะรอใน backend แล้วเลื่อนเข้า Facebook เมื่อถึงช่วงที่รองรับ ดูวิธีเปิดใช้งานและหยุดใน [RUNBOOK.md](RUNBOOK.md)
 
 ตั้งค่าลับใน `.env`/environment เท่านั้น: `DJANGO_SECRET_KEY`, `YOUTUBE_API_KEY`, และ Page token ตามชื่อ `token_env` เช่น `FB_PAGE_TOKEN_MAIN` อย่าใส่ token จริงใน Admin, SQLite, log, Git หรือ screenshot และอย่าใช้ shell command ที่พิมพ์ค่าลับออกมา คง `FB_GRAPH_VERSION=v26.0` และ `LIVE_PUBLISH=0` ระหว่างติดตั้ง
 
@@ -71,7 +73,7 @@ uv run pytest -q
 
 ## Verification completed in the development workspace
 
-Offline validation on the current workspace completed: `324 passed`; the end-to-end test uses a real generated portrait MP4 and local `ffprobe`, while YouTube/Facebook API responses are mocked and network sockets are blocked for the suite. `uv run ruff check .`, `uv run ruff format --check .`, Django system check, migration drift check, Admin HTTP/CSRF/static/private-media checks, and Windows wrapper fixture tests pass. This does not verify credentials, Meta app approval, Page permissions, Facebook processing, or public visibility; no real post or scheduled task has been enabled.
+Offline validation on the current workspace completed: `347 passed`; the end-to-end test uses a real generated portrait MP4 and local `ffprobe`, while YouTube/Facebook API responses are mocked and network sockets are blocked for the suite. `uv run ruff check .`, `uv run ruff format --check .`, Django system check, migration drift check, Admin HTTP/CSRF/static/private-media checks, and Windows wrapper fixture tests pass. This does not verify credentials, Meta app approval, Page permissions, Facebook processing, or public visibility.
 
 ## Local persistent serving
 
@@ -82,7 +84,7 @@ uv run waitress-serve --listen=127.0.0.1:8000 config.wsgi:application
 
 **Waitress ไม่เสิร์ฟ static files เอง**: คำสั่งนี้เปิด WSGI เท่านั้น ต้องจัด local static server/reverse proxy ให้ `/static/` ชี้ `.runtime/static/` จึงใช้ Admin CSS/JS ได้ครบ ห้ามชี้ไป `media/` ไม่อ้างว่าแค่นี้พร้อม production สำหรับ deployment ต้องกำหนด `DJANGO_DEBUG=0`, secret ที่แข็งแรง, HTTPS proxy, secure cookies/CSRF trusted origins และตรวจ `uv run python manage.py check --deploy` แยกก่อนเปิดรับภายนอก
 
-Backup/restore, unknown POST reconciliation, live gate และ Windows Task Scheduler อยู่ใน [RUNBOOK.md](RUNBOOK.md) ยังไม่มีการสร้างหรือเปิด scheduled task ให้
+Backup/restore, unknown POST reconciliation, live gate และ backend scheduler อยู่ใน [RUNBOOK.md](RUNBOOK.md)
 
 ## Sources
 

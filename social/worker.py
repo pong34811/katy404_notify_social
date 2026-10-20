@@ -3,7 +3,7 @@
 import os
 
 from django.core.management.base import CommandError
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 from filelock import Timeout
 
@@ -12,6 +12,8 @@ from .facebook import Facebook
 from .locking import worker_lock
 from .models import PublishJob, Video
 from .services import (
+    MAX_VIDEO_SCHEDULE_AHEAD,
+    MIN_VIDEO_SCHEDULE_AHEAD,
     delete_verified_video_original,
     dispatch_job,
     fetch_original,
@@ -40,25 +42,36 @@ def process_queue(limit):
             PublishJob.objects.filter(state="sending").exclude(remote_id="").update(
                 state="verifying", retry_at=now, updated_at=now
             )
+            schedule_start = now + MIN_VIDEO_SCHEDULE_AHEAD
+            schedule_end = now + MAX_VIDEO_SCHEDULE_AHEAD
             videos = (
                 Video.objects.filter(
+                    publishjob__kind=PublishJob.Kind.VIDEO,
+                    publishjob__state=PublishJob.State.PENDING,
+                    publishjob__scheduled_at__lte=schedule_end,
                     baseline=False,
                     available=True,
                     channel__enabled=True,
                     channel__ownership_confirmed=True,
                 )
+                .exclude(state__in=[Video.State.PUBLISHED, Video.State.SCHEDULED])
+                .distinct()
                 .select_related("channel__page")
-                .order_by(F("prepared_at").asc(nulls_first=True), "first_seen_at")
+                .order_by(
+                    "publishjob__scheduled_at",
+                    F("prepared_at").asc(nulls_first=True),
+                    "first_seen_at",
+                )
             )
             # Snapshot a bounded set of IDs before updating the ordering column.
-            for video in list(videos[:100]):
+            for video in list(videos[:limit]):
                 if fetch_original(video, downloader, now):
                     video.refresh_from_db()
                 prepare_video(video)
             processed = 0
             cleanup_jobs = (
                 PublishJob.objects.filter(
-                    state="succeeded",
+                    state__in=[PublishJob.State.SUCCEEDED, PublishJob.State.SCHEDULED],
                     kind="video",
                     error_code="original_cleanup_failed",
                 )
@@ -69,9 +82,23 @@ def process_queue(limit):
                 delete_verified_video_original(job)
                 processed += 1
             jobs = (
-                PublishJob.objects.filter(state__in=["pending", "verifying"])
+                PublishJob.objects.filter(
+                    Q(state="verifying")
+                    | Q(state="scheduled", scheduled_at__lte=now)
+                    | Q(state="pending", scheduled_at__lte=now)
+                    | Q(
+                        state="pending",
+                        scheduled_at__gte=schedule_start,
+                        scheduled_at__lte=schedule_end,
+                    )
+                )
                 .select_related("page", "video__channel__page")
-                .order_by(F("attempted_at").asc(nulls_first=True), "created_at", "pk")
+                .order_by(
+                    "scheduled_at",
+                    F("attempted_at").asc(nulls_first=True),
+                    "created_at",
+                    "pk",
+                )
             )
             for job in jobs.iterator(chunk_size=100):
                 if processed >= limit:

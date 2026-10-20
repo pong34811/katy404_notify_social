@@ -1,7 +1,9 @@
+from datetime import timedelta
 from io import StringIO
 
 import pytest
 from django.core.management import CommandError, call_command
+from django.utils import timezone
 
 from social.facebook import Facebook
 from social.locking import worker_lock
@@ -14,6 +16,12 @@ def test_worker_sends_then_verifies_and_does_not_duplicate(bundle, monkeypatch):
     monkeypatch.setenv("YOUTUBE_API_KEY", "fixture")
     monkeypatch.setenv("FB_PAGE_TOKEN_MAIN", "fixture")
     monkeypatch.setattr("social.media.probe", lambda _: (1080, 1920, 30))
+    PublishJob.objects.create(
+        video=bundle.video,
+        page=bundle.page,
+        kind="video",
+        scheduled_at=timezone.now() - timedelta(minutes=1),
+    )
     monkeypatch.setattr(YouTube, "details", lambda *a: {bundle.video.pk: {"title": "clip"}})
     sent = []
 
@@ -95,3 +103,27 @@ def test_invalid_worker_limit_rejected_without_writes(bundle, monkeypatch, limit
     monkeypatch.setenv("LIVE_PUBLISH", "1")
     with pytest.raises(CommandError, match="limit_must"):
         call_command("process_jobs", publish=True, limit=limit)
+
+
+def test_run_scheduler_once_runs_scan_and_process_and_survives_failure(monkeypatch):
+    calls = []
+    real = call_command
+
+    def fake(name, *a, **kw):
+        if name in ("scan_channels", "process_jobs"):
+            calls.append((name, kw.get("force"), kw.get("publish")))
+            if name == "scan_channels":
+                raise RuntimeError("boom")
+            return None
+        return real(name, *a, **kw)
+
+    monkeypatch.setattr("social.management.commands.run_scheduler.call_command", fake)
+    err = StringIO()
+    call_command("run_scheduler", once=True, publish=True, stderr=err)
+    assert calls == [("scan_channels", True, None), ("process_jobs", None, True)]
+    assert "scan_channels_failed RuntimeError" in err.getvalue()
+
+
+def test_run_scheduler_rejects_short_interval():
+    with pytest.raises(CommandError, match="interval_must_be_at_least_60_seconds"):
+        call_command("run_scheduler", scan_interval=10, once=True)

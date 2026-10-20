@@ -142,7 +142,7 @@ def fetch_original(video, dl, now):
 def prepare_video(video):
     if (
         video.baseline
-        or video.state == Video.State.PUBLISHED
+        or video.state in {Video.State.PUBLISHED, Video.State.SCHEDULED}
         or not video.available
         or not video.channel.enabled
         or not video.channel.ownership_confirmed
@@ -214,6 +214,11 @@ def prepare_video(video):
             PublishJob.objects.get_or_create(video=video, page=page, kind=kind)
 
 
+MIN_VIDEO_SCHEDULE_AHEAD = timedelta(minutes=10)
+# shortcut: Page rejected a 30-day schedule; raise only after a verified longer API schedule.
+MAX_VIDEO_SCHEDULE_AHEAD = timedelta(days=29)
+
+
 def dispatch_job(job, yt, fb, now):
     # Reload instead of trusting a stale caller's consent or state snapshot.
     job = PublishJob.objects.select_related("video__channel__page", "page").get(pk=job.pk)
@@ -229,6 +234,11 @@ def dispatch_job(job, yt, fb, now):
         return
     if job.kind != "photo" and not (video.file_matches_video and video.original):
         return
+    scheduled_at = None
+    if job.scheduled_at and job.scheduled_at > now:
+        if not now + MIN_VIDEO_SCHEDULE_AHEAD <= job.scheduled_at <= now + MAX_VIDEO_SCHEDULE_AHEAD:
+            return
+        scheduled_at = job.scheduled_at
     try:
         current = yt.details([video.pk], video.channel.channel_id)
         if video.pk in current and not isinstance(current[video.pk].get("title"), str):
@@ -275,8 +285,11 @@ def dispatch_job(job, yt, fb, now):
         return
     try:
         if job.kind == "video":
-            remote_id = fb.publish_video(
-                video.original.path, video.title, f"{video.title}\n{video.youtube_url}"
+            args = (video.original.path, video.title, f"{video.title}\n{video.youtube_url}")
+            remote_id = (
+                fb.publish_video(*args, scheduled_at=scheduled_at)
+                if scheduled_at
+                else fb.publish_video(*args)
             )
         elif job.kind == "photo":
             remote_id = fb.publish_photo(landscape_message(video.title), video.thumbnail_url)
@@ -289,10 +302,16 @@ def dispatch_job(job, yt, fb, now):
             or not re.fullmatch(pattern, remote_id)
         ):
             raise ValueError("invalid_remote_id")
-    except Exception:
+    except Exception as exc:
         # Never resend an ambiguous POST, even when the provider returned a 5xx.
+        error_code = str(exc)
+        if not re.fullmatch(
+            r"facebook_(?:http_\d{3}(?:_code_\d{1,10})?(?:_subcode_\d{1,10})?|api_error(?:_code_\d{1,10})?(?:_subcode_\d{1,10})?|request_failed|invalid_response)",
+            error_code,
+        ):
+            error_code = "post_outcome_unknown"
         PublishJob.objects.filter(pk=job.pk).update(
-            state="needs_review", error_code="post_outcome_unknown", updated_at=now
+            state="needs_review", error_code=error_code, updated_at=now
         )
         return
     # If persistence fails here, 'sending' survives and recovery requires review.
@@ -332,16 +351,17 @@ def mark_video_published_if_complete(job):
 
 
 def delete_verified_video_original(job):
-    """Delete the local original only after all Page deliveries are read-back verified."""
+    """Delete the local original after every Page delivery is verified or scheduled."""
     job = PublishJob.objects.select_related("video").get(pk=job.pk)
-    if job.state != "succeeded" or job.kind not in {"video", "link"}:
+    done_states = {PublishJob.State.SUCCEEDED, PublishJob.State.SCHEDULED}
+    if job.state not in done_states or job.kind not in {"video", "link"}:
         return False
     video = job.video
     video_job = PublishJob.objects.filter(
-        video=video, page=job.page, kind="video", state="succeeded"
+        video=video, page=job.page, kind="video", state__in=done_states
     )
     all_jobs = PublishJob.objects.filter(video=video, page=job.page)
-    if not video_job.exists() or all_jobs.exclude(state="succeeded").exists():
+    if not video_job.exists() or all_jobs.exclude(state__in=done_states).exists():
         return False
     name = video.original.name
     if name:
@@ -352,16 +372,49 @@ def delete_verified_video_original(job):
             video_job.update(error_code="original_cleanup_failed")
             return False
     video_job.filter(error_code="original_cleanup_failed").update(error_code="")
-    mark_video_published_if_complete(job)
+    if job.state == PublishJob.State.SUCCEEDED:
+        mark_video_published_if_complete(job)
     return True
 
 
 def verify_job(job, fb, now):
     job = PublishJob.objects.get(pk=job.pk)
-    if job.state != "verifying" or not job.remote_id or (job.retry_at and job.retry_at > now):
+    if (
+        job.state not in {PublishJob.State.VERIFYING, PublishJob.State.SCHEDULED}
+        or not job.remote_id
+        or (job.retry_at and job.retry_at > now)
+    ):
         return
+    if job.state == PublishJob.State.SCHEDULED and job.scheduled_at and job.scheduled_at > now:
+        return
+    verifying_schedule = (
+        job.state == PublishJob.State.VERIFYING
+        and job.kind == PublishJob.Kind.VIDEO
+        and job.scheduled_at
+        and job.scheduled_at > now
+    )
     try:
-        url = fb.verify(job.remote_id, job.kind)
+        if verifying_schedule:
+            if fb.verify_scheduled_video(job.remote_id, job.scheduled_at):
+                job.state = PublishJob.State.SCHEDULED
+                job.error_code = ""
+                job.retry_at = None
+                job.verify_attempts = 0
+                job.save(
+                    update_fields=[
+                        "state",
+                        "error_code",
+                        "retry_at",
+                        "verify_attempts",
+                        "updated_at",
+                    ]
+                )
+                Video.objects.filter(pk=job.video_id).update(state=Video.State.SCHEDULED)
+                delete_verified_video_original(job)
+                return
+            url = None
+        else:
+            url = fb.verify(job.remote_id, job.kind)
     except Exception:
         url = None
     if url and safe_remote_url(url):

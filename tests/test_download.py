@@ -168,5 +168,11 @@ def test_worker_prepares_video_in_same_pass_after_download(fresh, monkeypatch):
     monkeypatch.setattr("social.media.probe", lambda _: (1080, 1920, 30))
     monkeypatch.setattr(downloader, "info", fake_dl().info)
     monkeypatch.setattr(downloader, "download", fake_dl().download)
+    PublishJob.objects.create(
+        video=fresh.video,
+        page=fresh.page,
+        kind="video",
+        scheduled_at=timezone.now() + timedelta(days=1),
+    )
     process_queue(1)
     assert PublishJob.objects.filter(video=fresh.video, kind="video").exists()
