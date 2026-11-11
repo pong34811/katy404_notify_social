@@ -12,12 +12,15 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--publish", action="store_true")
+        parser.add_argument("--include-unscheduled", action="store_true")
         parser.add_argument("--limit", type=int, default=10)
 
     def handle(self, *args, **options):
         if not 1 <= options["limit"] <= 100:
             raise CommandError("limit_must_be_1_to_100")
         if not options["publish"]:
+            if options["include_unscheduled"]:
+                raise CommandError("include_unscheduled_requires_publish")
             self.stdout.write(
                 f"preview videos={Video.objects.filter(baseline=False).count()} jobs={PublishJob.objects.count()}"
             )
@@ -26,5 +29,5 @@ class Command(BaseCommand):
             raise CommandError("live_publish_disabled")
         from social.worker import process_queue
 
-        result = process_queue(options["limit"])
+        result = process_queue(options["limit"], include_unscheduled=options["include_unscheduled"])
         self.stdout.write(result)

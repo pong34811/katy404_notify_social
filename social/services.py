@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import tempfile
+import unicodedata
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -13,9 +14,14 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import media
-from .models import Channel, PublishJob, Video
+from .models import Channel, Page, PublishJob, Video
 from .notifications import landscape_message, valid_thumbnail_url
 from .validators import video_id_validator
+
+
+def _meta_posting_block(error_code: str) -> bool:
+    """True only for Meta's 368 posting block, which pauses the whole Page queue."""
+    return bool(re.search(r"(?:_code_368|api_error_code_368)(?:_|$)", error_code))
 
 
 def purge_stale_source_metadata(now):
@@ -38,6 +44,44 @@ def purge_stale_source_metadata(now):
         object_repr="Expired video metadata"
     )
     return count
+
+
+def _notification_title_key(title):
+    value = unicodedata.normalize("NFKC", title or "").casefold()
+    value = re.sub(r"#\S+", " ", value)
+    value = re.sub(r"^\s*re[- ]?upload\b", " ", value)
+    value = re.sub(r"า{2,}", "า", value)
+    value = re.sub(r"\s+", " ", value.replace("_", " ")).strip(" -_")
+    return value
+
+
+def duplicate_notification_video_ids(page):
+    """Return unnotified videos that duplicate a prior Page title or another upload."""
+    videos = list(
+        Video.objects.filter(channel__page=page, available=True)
+        .order_by("first_seen_at", "video_id")
+        .values("video_id", "title")
+    )
+    if not videos:
+        return set()
+
+    job_video_ids = set(PublishJob.objects.filter(page=page).values_list("video_id", flat=True))
+    notified_titles = {
+        _notification_title_key(video["title"])
+        for video in videos
+        if video["video_id"] in job_video_ids and _notification_title_key(video["title"])
+    }
+    seen_titles = set()
+    duplicates = set()
+    for video in videos:
+        video_id, key = video["video_id"], _notification_title_key(video["title"])
+        if not key or video_id in job_video_ids:
+            continue
+        if key in notified_titles or key in seen_titles:
+            duplicates.add(video_id)
+        else:
+            seen_titles.add(key)
+    return duplicates
 
 
 def scan_channel(channel, api, now):
@@ -252,7 +296,11 @@ def dispatch_job(job, yt, fb, now):
         Video.objects.filter(pk=video.pk).update(
             available=False, title="", thumbnail_url="", source_checked_at=now
         )
-        PublishJob.objects.filter(pk=job.pk).update(error_code="source_not_public", updated_at=now)
+        PublishJob.objects.filter(pk=job.pk).update(
+            state=PublishJob.State.BLOCKED,
+            error_code="source_not_public",
+            updated_at=now,
+        )
         return
     try:
         if video.landscape_confirmed:
@@ -310,6 +358,10 @@ def dispatch_job(job, yt, fb, now):
             error_code,
         ):
             error_code = "post_outcome_unknown"
+        # Pause the full Page queue only on Meta's 368 posting block; other
+        # failures stay needs_review and the queue keeps going.
+        if _meta_posting_block(error_code):
+            Page.objects.filter(pk=page.pk).update(auto_publish=False)
         PublishJob.objects.filter(pk=job.pk).update(
             state="needs_review", error_code=error_code, updated_at=now
         )
@@ -435,6 +487,8 @@ def verify_job(job, fb, now):
             "updated_at",
         ]
     )
+    if job.state == "needs_review" and _meta_posting_block(job.error_code):
+        Page.objects.filter(pk=job.page_id).update(auto_publish=False)
     if job.state == "succeeded":
         mark_video_published_if_complete(job)
         delete_verified_video_original(job)

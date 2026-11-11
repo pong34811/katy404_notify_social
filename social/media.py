@@ -87,11 +87,11 @@ def probe(path: Path) -> tuple[float, float, float]:
 
 
 def _valid_geometry(width: float, height: float, duration: float) -> bool:
-    return all(math.isfinite(x) and x > 0 for x in (width, height, duration)) and duration <= 1800
+    return all(math.isfinite(x) and x > 0 for x in (width, height, duration))
 
 
 def eligible(width: float, height: float, duration: float) -> bool:
-    return _valid_geometry(width, height, duration) and (
+    return _valid_geometry(width, height, duration) and duration <= 1800 and (
         height > width or (height == width and duration <= 180)
     )
 
@@ -100,5 +100,7 @@ def route_for_geometry(width: float, height: float, duration: float) -> str:
     if not _valid_geometry(width, height, duration):
         return "skip"
     if width > height:
+        # A long landscape replay is a thumbnail photo notification; the
+        # 30-minute upload limit applies only to native video uploads.
         return "photo"
     return "video" if eligible(width, height, duration) else "skip"

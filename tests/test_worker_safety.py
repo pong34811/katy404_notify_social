@@ -67,6 +67,55 @@ def test_saved_remote_id_recovers_to_get_without_post(bundle, monkeypatch, enabl
     assert job.state == "succeeded" and job.remote_id == "456"
 
 
+def test_worker_checks_verifying_jobs_before_new_posts(bundle, monkeypatch, enabled_worker):
+    now = timezone.now()
+    verifying = PublishJob.objects.create(
+        video=bundle.video,
+        page=bundle.page,
+        kind="video",
+        state=PublishJob.State.VERIFYING,
+        remote_id="456",
+        scheduled_at=now + timedelta(hours=1),
+    )
+    pending_video = Video.objects.create(
+        video_id="b" * 11,
+        channel=bundle.channel,
+        original=bundle.video.original.name,
+        rights_confirmed=True,
+        file_matches_video=True,
+    )
+    pending = PublishJob.objects.create(
+        video=pending_video,
+        page=bundle.page,
+        kind="video",
+        scheduled_at=now - timedelta(minutes=1),
+    )
+    monkeypatch.setattr("social.worker.fetch_original", lambda *args: False)
+    monkeypatch.setattr("social.worker.prepare_video", lambda *args: None)
+    monkeypatch.setattr("social.media.probe", lambda _: (1080, 1920, 30))
+    monkeypatch.setattr(
+        YouTube,
+        "details",
+        lambda self, ids, channel: {pending_video.pk: {"title": "clip"}},
+    )
+    checked = []
+    posted = []
+    monkeypatch.setattr(
+        Facebook,
+        "verify_scheduled_video",
+        lambda *args: checked.append(args) or False,
+    )
+    monkeypatch.setattr(Facebook, "publish_video", lambda *args: posted.append(args))
+
+    call_command("process_jobs", publish=True, limit=2)
+
+    verifying.refresh_from_db()
+    pending.refresh_from_db()
+    assert len(checked) == 1 and not posted
+    assert verifying.state == PublishJob.State.VERIFYING
+    assert pending.state == PublishJob.State.PENDING
+
+
 def test_preparation_batch_reaches_video_101(bundle, enabled_worker):
     from datetime import timedelta
 
@@ -82,9 +131,9 @@ def test_preparation_batch_reaches_video_101(bundle, enabled_worker):
         ]
     )
     PublishJob.objects.create(video=bundle.video, page=bundle.page, kind="video", scheduled_at=now)
-    call_command("process_jobs", publish=True)
+    call_command("process_jobs", publish=True, limit=100)
     assert Video.objects.filter(prepared_at__isnull=False).count() == 100
-    call_command("process_jobs", publish=True)
+    call_command("process_jobs", publish=True, limit=100)
     assert Video.objects.filter(prepared_at__isnull=False).count() == 101
 
 
@@ -145,3 +194,44 @@ def test_page_gate_cannot_be_bypassed_by_flag_alone(bundle, monkeypatch, enabled
     monkeypatch.setattr(Facebook, "publish_video", lambda *a: pytest.fail("Page is disabled"))
     call_command("process_jobs", publish=True)
     assert not PublishJob.objects.exclude(state="pending").exists()
+
+
+@pytest.mark.parametrize(
+    "error,paused",
+    [
+        ("facebook_http_400_code_368_subcode_1390008", True),
+        ("facebook_api_error_code_368", True),
+        ("facebook_http_400_code_3680", False),
+    ],
+)
+def test_meta_posting_block_stops_remaining_page_uploads(
+    bundle, monkeypatch, enabled_worker, error, paused
+):
+    second = Video.objects.create(
+        video_id="b" * 11,
+        channel=bundle.channel,
+        original=bundle.video.original.name,
+        rights_confirmed=True,
+        file_matches_video=True,
+    )
+    scheduled_at = timezone.now() + timedelta(hours=1)
+    for video in (bundle.video, second):
+        PublishJob.objects.create(
+            video=video, page=bundle.page, kind="video", scheduled_at=scheduled_at
+        )
+    monkeypatch.setattr(YouTube, "details", lambda self, ids, channel: {ids[0]: {"title": "clip"}})
+    calls = []
+
+    def blocked(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError(error)
+
+    monkeypatch.setattr(Facebook, "publish_video", blocked)
+    call_command("process_jobs", publish=True, limit=10)
+    call_command("process_jobs", publish=True, limit=10)
+    bundle.page.refresh_from_db()
+    assert bundle.page.auto_publish == (not paused)
+    assert len(calls) == (1 if paused else 2)
+    first = PublishJob.objects.get(video=bundle.video)
+    assert first.state == "needs_review" and first.error_code == error and not first.remote_id
+    assert PublishJob.objects.get(video=second).state == ("pending" if paused else "needs_review")

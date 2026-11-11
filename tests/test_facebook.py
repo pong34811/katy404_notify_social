@@ -192,41 +192,76 @@ def test_video_upload_streams_file_and_closes_it_even_on_transport_failure(
     path = tmp_path / "private-original.mp4"
     path.write_bytes(b"offline-fixture-not-real-media")
     api = Facebook("123", "fixture-token")
-    sources = []
+    post_calls = []
 
     def post(url, **kwargs):
         assert url == VIDEO_GRAPH + "123/videos"
+        post_calls.append(kwargs)
         body = kwargs["data"]
+        if isinstance(body, dict):
+            phase = body.get("upload_phase")
+            assert phase in {"start", "finish"}
+            if phase == "start":
+                assert body["file_size"] == str(path.stat().st_size)
+                assert "video_file_chunk" not in body
+            else:
+                assert body["title"] == "ชื่อคลิป"
+                assert body["description"] == "description"
+                assert {key: body[key] for key in ("published", "secret", "no_story")} == {
+                    "published": "true",
+                    "secret": "false",
+                    "no_story": "false",
+                }
+                assert "reference_only" not in body
+            assert kwargs["timeout"] == (10, 60)
+            if failure:
+                raise requests.Timeout("secret provider details")
+            return SimpleNamespace(
+                status_code=200,
+                json=lambda: {
+                    "upload_session_id": "S",
+                    "start_offset": 0,
+                    "end_offset": path.stat().st_size,
+                    "video_id": "V",
+                }
+                if phase == "start"
+                else {"video_id": "456"},
+            )
         assert isinstance(body, MultipartEncoder)
         assert "files" not in kwargs
-        assert body.fields["title"] == "ชื่อคลิป"
-        assert body.fields["description"] == "description"
-        assert {key: body.fields[key] for key in ("published", "secret", "no_story")} == {
-            "published": "true",
-            "secret": "false",
-            "no_story": "false",
-        }
-        # Page lacks Video Copyright API onboarding; this field makes Graph reject uploads.
-        assert "reference_only" not in body.fields
-        filename, source, content_type = body.fields["source"]
-        assert filename == "original.mp4" and content_type == "video/mp4"
-        assert hasattr(source, "read") and not isinstance(source, bytes)
-        assert not source.closed and source.tell() == 0
-        sources.append(source)
+        assert body.fields["upload_phase"] == "transfer"
+        assert body.fields["upload_session_id"] == "S"
+        assert body.fields["start_offset"] == "0"
+        filename, chunk, content_type = body.fields["video_file_chunk"]
+        assert filename == path.name and content_type == "video/mp4"
+        assert isinstance(chunk, bytes) and chunk == b"offline-fixture-not-real-media"
         assert kwargs["headers"] == {"Content-Type": body.content_type}
         assert kwargs["timeout"] == (10, 600)
         assert kwargs["allow_redirects"] is False
         if failure:
             raise requests.Timeout("secret provider details")
-        return SimpleNamespace(status_code=200, json=lambda: {"id": "456"})
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "upload_session_id": "S",
+                "start_offset": path.stat().st_size,
+                "end_offset": path.stat().st_size,
+            },
+        )
 
     monkeypatch.setattr(api.session, "post", post)
     if failure:
         with pytest.raises(RuntimeError, match="^facebook_request_failed$"):
             api.publish_video(path, "ชื่อคลิป", "description")
+        assert [c["data"].get("upload_phase") for c in post_calls] == ["start"]
     else:
         assert api.publish_video(path, "ชื่อคลิป", "description") == "456"
-    assert len(sources) == 1 and sources[0].closed
+        assert [
+            c["data"].get("upload_phase")
+            if isinstance(c["data"], dict)
+            else c["data"].fields.get("upload_phase")
+            for c in post_calls
+        ] == ["start", "transfer", "finish"]
 
 
 @responses.activate
@@ -285,18 +320,41 @@ def test_publish_rejects_missing_malformed_or_wrong_page_remote_ids(kind, result
         if kind == "video"
         else GRAPH + "123/" + ("feed" if kind == "link" else "photos")
     )
-    responses.post(endpoint, json=result)
+    if kind == "video":
+        # Register valid start/transfer responses so only the finish phase
+        # reaches the malformed remote-id check.
+        path = tmp_path / "original.mp4"
+        path.write_bytes(b"fixture")
+        size = path.stat().st_size
+        responses.post(
+            endpoint,
+            json={
+                "upload_session_id": "S",
+                "start_offset": 0,
+                "end_offset": size,
+                "video_id": "V",
+            },
+        )
+        responses.post(
+            endpoint,
+            json={
+                "upload_session_id": "S",
+                "start_offset": size,
+                "end_offset": size,
+            },
+        )
+        responses.post(endpoint, json=result)
+    else:
+        responses.post(endpoint, json=result)
     with pytest.raises(ValueError, match="^invalid_remote_id$") as caught:
         if kind == "link":
             api.publish_link("clip", "https://www.youtube.com/watch?v=" + "a" * 11)
         elif kind == "photo":
             api.publish_photo("clip", "https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg")
         else:
-            path = tmp_path / "original.mp4"
-            path.write_bytes(b"fixture")
             api.publish_video(path, "clip", "description")
     assert "fixture-token" not in str(caught.value)
-    assert len(responses.calls) == 1
+    assert len(responses.calls) == (3 if kind == "video" else 1)
 
 
 @pytest.mark.parametrize(

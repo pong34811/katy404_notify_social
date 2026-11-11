@@ -22,7 +22,7 @@ uv run python manage.py process_jobs
 
 `check_integrations` เป็น read-only GET: ตรวจ channel/page identity และ read access เท่านั้น **ไม่ยืนยัน publish permission** Graph version ตรึง `v26.0` ผู้ใช้ต้องตรวจ Meta app access level, Page task `CREATE_CONTENT`, permissions ที่ endpoint/version จริงต้องใช้ (เช่น `pages_show_list`, `pages_read_engagement`, `pages_manage_posts`) และ App Review/Business Verification ที่เกี่ยวข้องก่อนเปิดเผยแพร่ ห้ามแก้ version/เพิ่มสิทธิ์เองโดยเดา
 
-สแกนเต็มคลังครั้งแรกเป็น baseline และต้องไม่มี jobs; ครั้งถัดไปคลิปที่เพิ่งพบ public รอ original/ยืนยันแนวนอน ไม่ replay baseline ไม่ใช้ yesterday-only window ต้นทาง private/unlisted/deleted/live/upcoming/replay ไม่ถูกส่ง
+สแกนเต็มคลังครั้งแรกเป็น baseline และต้องไม่มี jobs; ครั้งถัดไปคลิปที่เพิ่งพบ public รอ original/ยืนยันแนวนอน ไม่ replay baseline ไม่ใช้ yesterday-only window ต้นทาง private/unlisted/deleted/live/upcoming/ไลฟ์ที่ยังไม่จบจะไม่ถูกส่ง ไลฟ์ public ที่จบแล้วรวมอยู่ใน snapshot และเข้าคิวได้หลัง baseline
 
 `process_jobs` ไม่มี `--publish` เป็น preview ไม่สร้าง job/เปลี่ยน DB/ส่ง HTTP write/สร้าง worker lock การแนบ original ใน Admin เป็นแค่การบันทึกไฟล์ ไม่สั่งโพสต์ ตรวจไฟล์จริงด้วย ffprobe ใน worker ไม่เรียก HTTP หรือ probe ของไฟล์จำลองตอน validate form
 
@@ -59,6 +59,8 @@ Admin เป็น staff-only + CSRF; Page ID immutable หลังสร้า
 
 Timeout, 429/5xx หลังเริ่ม POST หรือ worker crash ไม่พิสูจน์ว่าฝั่ง Facebook ไม่รับข้อมูล ระบบจึงหยุด `needs_review` การเริ่ม worker ใหม่ไม่อนุญาต POST ซ้ำ ไม่มี distributed exactly-once guarantee
 
+หาก Meta ตอบ Graph error `368` ระบบปิด `Page.auto_publish` ของเพจนั้นทันที เพื่อหยุดงานถัดไปในรอบเดียวกันและรอบต่อไป งานที่ถูกปฏิเสธคงเป็น `needs_review` และงานถัดไปคงเป็น `pending` ต้องแก้ข้อจำกัดตามข้อความจาก Meta ก่อนเปิดคิวอีกครั้ง; การเปลี่ยน token หรือส่งซ้ำไม่ได้ยืนยันว่าข้อจำกัดถูกปลดแล้ว
+
 1. คง `LIVE_PUBLISH=0`/ปิด Page auto publish และหยุด backend scheduler; รอ worker ที่ทำงานอยู่จบก่อน ห้าม hard-kill ระหว่าง upload
 2. จด job ID, video ID, Page และเวลาที่ส่งจาก Admin โดยไม่คัดลอก credentials
 3. เปิด Page จริง ตรวจว่ามี remote object อยู่หรือไม่ และดู **เนื้อหาจริง** ไม่ใช่แค่ ID/owner: video/link ต้องตรงคลิปและ YouTube URL ใน caption; photo ต้องตรงรูปปก ชื่อ และแท็กหนึ่งบรรทัดข้างต้น **ไม่บังคับเติม URL ลง photo**
@@ -93,7 +95,7 @@ uv run python manage.py process_jobs --publish --limit 1
 
 ## Backend scheduler
 
-`manage.py run_scheduler` เรียก `scan_channels --force` และ `process_jobs` ทันทีเมื่อเริ่ม จากนั้น scan ทุกชั่วโมงและ process ทุก 60 วินาที รันเป็น process เดียวแยกจากเว็บเซิร์ฟเวอร์ วิดีโอที่มีเวลาเผยแพร่ล่วงหน้า 10 นาทีถึง 29 วันจะถูกอัปโหลดไป Facebook ด้วย `published=false` และ `scheduled_publish_time` แล้วตรวจ ID เจ้าของเพจและเวลาจริงก่อนนับเป็น `scheduled`; งานที่ไกลกว่า 29 วันจะรอใน backend จนเข้าสู่ช่วงดังกล่าว แม้ Page Videos API reference ระบุช่วงที่ยาวกว่า แต่เพจนี้ยืนยันการตั้งเวลาได้ถึง 29 วันและปฏิเสธรายการถัดไป จึงใช้ช่วงที่ตรวจพบจริง งานที่ถึงเวลาแล้วโดยยังไม่ถูกส่งให้ Meta จะเผยแพร่ในรอบ worker นั้นและจะไม่ถูกส่งก่อน `scheduled_at` งานที่ไม่มี `scheduled_at` จะไม่ถูกดาวน์โหลดหรือเผยแพร่:
+`manage.py run_scheduler` เรียก `scan_channels --force` และ `process_jobs` ทันทีเมื่อเริ่ม จากนั้น scan ทุกชั่วโมงและ process ทุก 60 วินาที รันเป็น process เดียวแยกจากเว็บเซิร์ฟเวอร์ เมื่อเปิดด้วย `--publish` และ `LIVE_PUBLISH=1` จะตรวจวิดีโอที่ยังไม่มีงานด้วย yt-dlp metadata และจัดเฉพาะแนวนอนเป็น photo post; รายการแนวตั้งจะถูกทำเครื่องหมายว่าไม่ใช่แนวนอนเพื่อไม่ให้ตรวจซ้ำทุกรอบ ส่วนรายการที่ชื่อหรือ video ID ซ้ำและงานที่มีอยู่แล้วจะถูกข้าม วิดีโอที่มีเวลาเผยแพร่ล่วงหน้า 10 นาทีถึง 29 วันจะถูกอัปโหลดไป Facebook ด้วย `published=false` และ `scheduled_publish_time` แล้วตรวจ ID เจ้าของเพจและเวลาจริงก่อนนับเป็น `scheduled`; งานที่ไกลกว่า 29 วันจะรอใน backend จนเข้าสู่ช่วงดังกล่าว แม้ Page Videos API reference ระบุช่วงที่ยาวกว่า แต่เพจนี้ยืนยันการตั้งเวลาได้ถึง 29 วันและปฏิเสธรายการถัดไป จึงใช้ช่วงที่ตรวจพบจริง งานที่ถึงเวลาแล้วโดยยังไม่ถูกส่งให้ Meta จะเผยแพร่ในรอบ worker นั้นและจะไม่ถูกส่งก่อน `scheduled_at` โดยปริยาย งานที่ไม่มี `scheduled_at` จะไม่ถูกส่ง; ให้เพิ่ม `--include-unscheduled` เฉพาะเมื่อเปิดใช้งาน live queue สำหรับรายการใหม่ที่ผ่าน consent/readiness แล้ว ทั้งงานที่ยังไม่กำหนดเวลาจะถูกส่งทีละหนึ่งรายการและรอ exact-object readback ด้วย `--process-limit 1`:
 
 ```powershell
 .venv\Scripts\python.exe manage.py run_scheduler
@@ -102,10 +104,12 @@ uv run python manage.py process_jobs --publish --limit 1
 คำสั่งนี้เป็น preview โดยค่าเริ่มต้น หากเปิด live publishing และอนุมัติให้ทำงานต่อเนื่อง ให้เพิ่ม `--publish`; ต้องผ่าน gate `LIVE_PUBLISH=1`, Page `auto_publish=True` และการยืนยันสิทธิ์/ไฟล์ที่กำหนดครบทุกข้อ การเปิด `--publish` เพียงอย่างเดียวไม่ข้าม gate เหล่านี้
 
 ```powershell
-.venv\Scripts\python.exe manage.py run_scheduler --publish --process-interval 60
+.venv\Scripts\python.exe manage.py run_scheduler --publish --include-unscheduled --process-interval 60 --process-limit 1
 ```
 
 เก็บ process นี้ไว้หนึ่งตัวในเครื่องและตรวจ output/log สม่ำเสมอ; `runserver`/Waitress ไม่ได้เริ่ม scheduler ให้เอง งานที่ Meta ยอมรับเป็น scheduled แล้วจะเผยแพร่ต่อได้แม้ backend หยุด แต่ backend ต้องทำงานต่อเพื่ออัปโหลดรายการที่ยังอยู่นอกช่วงเวลา 29 วัน เมื่อต้องหยุด ให้รอคำสั่ง scan/process รอบปัจจุบันจบก่อนแล้วจึงกด Ctrl+C ห้าม hard-kill ระหว่าง HTTP upload เพราะผลอาจกลายเป็น `needs_review` และห้ามส่งซ้ำจนกว่าจะตรวจว่าไม่มีรายการนั้นใน Scheduled
+
+บน Windows เปิดบริการที่ตั้งค่าไว้แล้วด้วย `powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1` สคริปต์ตรวจ `LIVE_PUBLISH=1` และ Page `auto_publish=True` ก่อน แล้วค่อยเปิด Admin ที่ `127.0.0.1:8000` กับ scheduler; ถ้าเปิดแค่ `runserver` ระบบจะไม่สแกนและไม่แจ้งเตือน สคริปต์ scheduler สแกนคลังทันทีและ backfill คลิปแนวนอนที่ยังไม่มีงาน จึงตรวจย้อนหลังต่อได้เมื่อเปิดเครื่องในวันถัดไป
 
 ## Retention และ maintenance
 

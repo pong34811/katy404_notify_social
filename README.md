@@ -2,7 +2,7 @@
 
 Django Admin + SQLite สำหรับตรวจคลิปสาธารณะใหม่ของช่อง YouTube ที่คุณดูแล แล้วเตรียมส่งไปยัง Facebook **Page** โดยใช้ไฟล์ต้นฉบับ/ไฟล์ที่คุณดาวน์โหลดผ่าน YouTube Studio เอง ไม่มี downloader, browser cookies หรือ Community Posts
 
-**ดาวน์โหลด MP4 อัตโนมัติ (ปิดเป็นค่าเริ่มต้น):** ตั้ง `YT_DOWNLOAD=1` ใน `.env` เพื่อให้ worker ใช้ yt-dlp (ไม่ใช้ cookies, ไม่ใช้ `YOUTUBE_API_KEY`) โหลดคลิป**แนวตั้ง**ใหม่ของช่องที่ `enabled` + `ownership_confirmed` และ Page เปิด `auto_publish` เท่านั้น คลิปแนวนอนไม่โหลด (อ่านขนาดจากเมตาดาตา แล้วส่งเป็น photo post) คลิป baseline ไม่ถูกโหลด ล้มเหลวจะลองใหม่ได้ทุก 1 ชั่วโมง หลังโพสต์ผ่านการอ่านกลับจาก Facebook ระบบลบ MP4 เอง ความเสี่ยง: นโยบาย YouTube API ห้ามดาวน์โหลด/เก็บสำเนา audiovisual content โดยไม่มีหนังสืออนุมัติ[1] และ ToS ของ YouTube อาจจำกัดการดาวน์โหลดนอกเหนือ Studio[2] ใช้กับช่องของคุณเองและยอมรับความเสี่ยงเอง ทางปลอดภัยกว่าคือดาวน์โหลดผ่าน YouTube Studio แล้วแนบใน Admin
+**ดาวน์โหลด MP4 อัตโนมัติ (ปิดเป็นค่าเริ่มต้น):** ตั้ง `YT_DOWNLOAD=1` ใน `.env` เพื่อให้ worker ใช้ yt-dlp (ไม่ใช้ cookies, ไม่ใช้ `YOUTUBE_API_KEY`) โหลดคลิป**แนวตั้ง**ใหม่ของช่องที่ `enabled` + `ownership_confirmed` และ Page เปิด `auto_publish` เท่านั้น คลิปแนวนอนไม่โหลด (ตรวจขนาดจาก metadata แล้วส่งเป็น photo post แม้เป็นไลฟ์ย้อนหลังที่เกิน 30 นาที) คลิป baseline ไม่ถูกโหลด ล้มเหลวจะลองใหม่ได้ทุก 1 ชั่วโมง หลังโพสต์ผ่านการอ่านกลับจาก Facebook ระบบลบ MP4 เอง ความเสี่ยง: นโยบาย YouTube API ห้ามดาวน์โหลด/เก็บสำเนา audiovisual content โดยไม่มีหนังสืออนุมัติ[1] และ ToS ของ YouTube อาจจำกัดการดาวน์โหลดนอกเหนือ Studio[2] ใช้กับช่องของคุณเองและยอมรับความเสี่ยงเอง ทางปลอดภัยกว่าคือดาวน์โหลดผ่าน YouTube Studio แล้วแนบใน Admin
 
 **ค่าเริ่มต้นปิดการเผยแพร่จริง** (`LIVE_PUBLISH=0`, Page `auto_publish=False`) และ `process_jobs` เป็น preview เท่านั้น ทดสอบจริงแล้วสำหรับคลิปแนวนอนหนึ่งคลิป: Facebook Page ได้รับ photo post หนึ่งรายการ และตรวจยืนยัน owner, caption และไฟล์แนบผ่าน readback; ยังไม่ได้ทดสอบอัปโหลดวิดีโอแนวตั้งเพราะยังไม่มีไฟล์ต้นฉบับ
 
@@ -20,14 +20,26 @@ uv run python manage.py runserver 127.0.0.1:8000
 
 เปิด <http://127.0.0.1:8000/admin/> ใช้บัญชี staff/superuser; `runserver` ใช้พัฒนาในเครื่องเท่านั้น อย่า bind `0.0.0.0` หรือเปิดพอร์ตสู่ภายนอก
 
-ตัว scheduler ทำงานเป็น Django management command แยกจากเว็บเซิร์ฟเวอร์: รัน `uv run python manage.py run_scheduler` ใน terminal อีกหน้าต่างเพื่อ preview หรือเติม `--publish` เมื่ออนุมัติ live publishing แล้ว คำสั่งจะ scan ทันที จากนั้น scan ทุกชั่วโมงและ process คิวทุก 60 วินาที วิดีโอที่อยู่ในช่วงเวลาที่ Meta รับได้จะอัปโหลดเป็นโพสต์กำหนดเวลาใน Facebook; รายการที่ไกลกว่านั้นจะรอใน backend แล้วเลื่อนเข้า Facebook เมื่อถึงช่วงที่รองรับ ดูวิธีเปิดใช้งานและหยุดใน [RUNBOOK.md](RUNBOOK.md)
+เว็บเซิร์ฟเวอร์ (`runserver`) แสดงหน้า Admin อย่างเดียว ไม่ได้เริ่มการแจ้งเตือน บน Windows ใช้ `powershell -ExecutionPolicy Bypass -File .\scripts\start_local.ps1` เพื่อเปิดทั้ง Admin และ scheduler เมื่อ gate live เปิดอยู่; การสแกนทำทันทีและทุกชั่วโมง พร้อมประมวลผลคิวทุก 60 วินาที ทีละ 1 รายการและรอ readback ก่อนรายการถัดไป Scheduler จะตรวจคลิปย้อนหลังที่ยังไม่มีงานและจัดเฉพาะคลิปแนวนอนเป็น photo post โดยข้ามวิดีโอ ID/ชื่อซ้ำ คลิปแนวตั้ง ไลฟ์สด/กำหนดการ/ยังไม่จบจะไม่ถูกส่งจาก backfill นี้ `runserver` ที่เปิดเองอย่างเดียวไม่สแกนหรือแจ้งเตือน ดูวิธีเปิดและหยุดใน [RUNBOOK.md](RUNBOOK.md)
+
+## ติดตั้งบน Synology ด้วย Docker Compose
+
+วางโฟลเดอร์โปรเจกต์ไว้ใน Shared Folder ถ้าย้ายจากเครื่องเดิม ให้หยุดเว็บและ scheduler แล้วคัดลอก `db.sqlite3` เดิมไป `data/db.sqlite3` และ `media/` เดิมไป `data/media/` **ก่อนเปิด Compose ครั้งแรก** เพื่อให้ใช้ข้อมูลเดิม ไม่ใช่ฐานข้อมูลว่าง คัดลอก `.env` จริงที่มี keys/tokens ไป NAS อย่างปลอดภัย; `.env.example` เป็น template ว่างเท่านั้น หากยังไม่มี `.env` ให้คัดลอก template แล้วกรอกค่าลับ ตั้ง `DJANGO_ALLOWED_HOSTS` ให้มี IP/ชื่อ NAS และคง `LIVE_PUBLISH=0`, `YT_DOWNLOAD=0` ระหว่างติดตั้ง
+
+ใน DSM เปิด Container Manager → Project → Create แล้วเลือกโฟลเดอร์โปรเจกต์ที่มี `compose.yaml` จากนั้นสั่ง build/start หรือใช้ SSH รัน `docker compose up -d --build` เว็บอยู่ที่ `http://<NAS-IP>:8000/admin/`; สร้างบัญชีผู้ดูแลด้วย `docker compose exec web python manage.py createsuperuser` จาก SSH/Terminal ของโปรเจกต์
+
+Compose แยกเว็บกับ scheduler และให้ scheduler สแกนทุกชั่วโมง โดยค่าเริ่มต้น scheduler ทำงานแบบ preview เท่านั้น ไม่ส่งโพสต์จริง โฟลเดอร์ `data/` เก็บฐานข้อมูล SQLite และไฟล์ต้นฉบับ ส่วน `data/.runtime/` เก็บล็อกและไฟล์ static; สำรอง `data/` ทั้งโฟลเดอร์ก่อนย้ายหรือติดตั้งใหม่ และหยุด scheduler หลังตรวจว่าไม่มีงานกำลังอัปโหลด ดูเงื่อนไขเปิด live publishing และขั้นตอนสำรอง/กู้คืนใน [RUNBOOK.md](RUNBOOK.md)
+
+หลังตรวจ gates ตาม RUNBOOK และอนุมัติให้โพสต์อัตโนมัติแล้ว จึงเพิ่ม `--publish --include-unscheduled` ใน `command` ของ service `scheduler` ใน `compose.yaml`; ต้องตั้ง `LIVE_PUBLISH=1` และเปิด `Page.auto_publish` ด้วย
+
+พอร์ต 8000 เหมาะกับการเข้าจากเครือข่ายที่เชื่อถือได้ในบ้านเท่านั้น อย่า forward port นี้จากอินเทอร์เน็ต; หากจะใช้ HTTPS ผ่าน reverse proxy ให้ตั้งค่า trusted origin และ secure cookies ตามส่วน Local persistent serving ก่อนเปิดใช้งาน
 
 ตั้งค่าลับใน `.env`/environment เท่านั้น: `DJANGO_SECRET_KEY`, `YOUTUBE_API_KEY`, และ Page token ตามชื่อ `token_env` เช่น `FB_PAGE_TOKEN_MAIN` อย่าใส่ token จริงใน Admin, SQLite, log, Git หรือ screenshot และอย่าใช้ shell command ที่พิมพ์ค่าลับออกมา คง `FB_GRAPH_VERSION=v26.0` และ `LIVE_PUBLISH=0` ระหว่างติดตั้ง
 
 1. เพิ่ม Page: ระบุ numeric Page ID และ **ชื่อ environment variable** ใน `token_env` ไม่ใช่ token จริง คง `auto_publish=False`, `post_link=False`
 2. เพิ่ม Channel: ใช้ Channel ID รูปแบบ `UC…` ตรงตัว ไม่ใส่ handle/URL/ช่องว่าง เลือก Page และยืนยันว่าเป็นเจ้าของ/ดูแลช่องก่อนเปิด `ownership_confirmed` และ `enabled`
-3. สแกนครั้งแรกเป็น baseline ทั้งคลัง: ไม่มีงานโพสต์คลิปย้อนหลัง หลัง baseline ห้ามเปลี่ยน Channel ID หรือ Page mapping; Page ID แก้ไม่ได้หลังสร้าง
-4. คลิปสาธารณะใหม่จะรอ original หรือการยืนยันแนวนอน การแนบไฟล์ใน Admin **บันทึกอย่างเดียว ไม่ส่ง Facebook และไม่สร้างงานด้วยตัวมันเอง**
+3. สแกนครั้งแรกเป็น baseline ทั้งคลัง: ไม่มีงานโพสต์คลิปย้อนหลัง หลัง baseline ห้ามเปลี่ยน Channel ID หรือ Page mapping; Page ID แก้ไม่ได้หลังสร้าง ไลฟ์ย้อนหลังที่ API เพิ่งตรวจพบหลัง baseline จะเข้าคิวเป็นคลิปใหม่
+4. คลิปสาธารณะใหม่จะรอ original หรือการยืนยันแนวนอนและสิทธิ์ข้ามแพลตฟอร์ม การแนบไฟล์ใน Admin **บันทึกอย่างเดียว ไม่ส่ง Facebook และไม่สร้างงานด้วยตัวมันเอง**; worker จะตรวจและเตรียมงานในรอบถัดไปเมื่อเปิด publish gate การแจ้งเตือนจะข้าม ID ที่มีงานเดิมและชื่อซ้ำตามกติกา normalize ส่วน baseline จะไม่ถูกเพิ่มเข้าคิวอัตโนมัติ
 
 ## รูปแบบการส่ง
 
@@ -82,7 +94,7 @@ uv run python manage.py collectstatic --noinput
 uv run waitress-serve --listen=127.0.0.1:8000 config.wsgi:application
 ```
 
-**Waitress ไม่เสิร์ฟ static files เอง**: คำสั่งนี้เปิด WSGI เท่านั้น ต้องจัด local static server/reverse proxy ให้ `/static/` ชี้ `.runtime/static/` จึงใช้ Admin CSS/JS ได้ครบ ห้ามชี้ไป `media/` ไม่อ้างว่าแค่นี้พร้อม production สำหรับ deployment ต้องกำหนด `DJANGO_DEBUG=0`, secret ที่แข็งแรง, HTTPS proxy, secure cookies/CSRF trusted origins และตรวจ `uv run python manage.py check --deploy` แยกก่อนเปิดรับภายนอก
+Waitress ไม่เสิร์ฟ static files เอง; Compose ใช้ WhiteNoise หลัง `collectstatic` เพื่อให้ Admin CSS/JS ทำงาน ส่วนการรัน Waitress นอก Compose ต้องจัด static server/reverse proxy ให้ `/static/` ชี้ `.runtime/static/` ห้ามชี้ไป `media/` ก่อนเปิดรับผ่าน HTTPS ต้องกำหนด secure cookies/CSRF trusted origins และตรวจ `uv run python manage.py check --deploy` แยก
 
 Backup/restore, unknown POST reconciliation, live gate และ backend scheduler อยู่ใน [RUNBOOK.md](RUNBOOK.md)
 

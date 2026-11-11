@@ -1,0 +1,15 @@
+.git
+.venv
+.env
+.env.*
+data
+db.sqlite3*
+media
+backups
+.runtime
+.pytest_cache
+.ruff_cache
+.hermes
+.superpowers
+tests
+scripts

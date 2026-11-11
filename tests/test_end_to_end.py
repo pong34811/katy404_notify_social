@@ -115,7 +115,27 @@ def test_real_original_complete_offline_publishing_lifecycle(bundle, monkeypatch
         kind="photo",
         scheduled_at=timezone.now() - timedelta(minutes=1),
     )
-    responses.post("https://graph-video.facebook.com/v26.0/123/videos", json={"id": "456"})
+    video_size = original.stat().st_size
+    responses.post(
+        "https://graph-video.facebook.com/v26.0/123/videos",
+        json={
+            "upload_session_id": "S",
+            "start_offset": 0,
+            "end_offset": video_size,
+            "video_id": "V",
+        },
+    )
+    responses.post(
+        "https://graph-video.facebook.com/v26.0/123/videos",
+        json={
+            "upload_session_id": "S",
+            "start_offset": video_size,
+            "end_offset": video_size,
+        },
+    )
+    responses.post(
+        "https://graph-video.facebook.com/v26.0/123/videos", json={"video_id": "456"}
+    )
     responses.post(
         "https://graph.facebook.com/v26.0/123/photos", json={"id": "789", "post_id": "123_789"}
     )
@@ -140,7 +160,7 @@ def test_real_original_complete_offline_publishing_lifecycle(bundle, monkeypatch
     assert PublishJob.objects.count() == 2
     assert set(PublishJob.objects.values_list("state", flat=True)) == {"succeeded"}
     posts = [c for c in responses.calls if c.request.method == "POST"]
-    assert len(posts) == 2
+    assert len(posts) == 4
     photo = next(c for c in posts if c.request.url.endswith("/photos"))
     assert json.loads(photo.request.body) == {
         "message": "ชื่อคลิป " + "c" * 11 + "\ntag: #katy404 #vtuberth #short #วีทูปเบอร์ไทย",
@@ -150,4 +170,4 @@ def test_real_original_complete_offline_publishing_lifecycle(bundle, monkeypatch
     assert not horizontal.original
     call_command("scan_channels", force=True)
     call_command("process_jobs", publish=True)
-    assert len([c for c in responses.calls if c.request.method == "POST"]) == 2
+    assert len([c for c in responses.calls if c.request.method == "POST"]) == 4

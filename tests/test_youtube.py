@@ -136,16 +136,16 @@ def test_details_batches_fifty_and_returns_public_metadata(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "privacy,live,replay",
+    "privacy,live,replay,expected",
     [
-        ("private", "none", False),
-        ("unlisted", "none", False),
-        ("public", "live", False),
-        ("public", "upcoming", False),
-        ("public", "none", True),
+        ("private", "none", False, {}),
+        ("unlisted", "none", False, {}),
+        ("public", "live", False, {}),
+        ("public", "upcoming", False, {}),
+        ("public", "none", True, {VIDEO: {"title": "ชื่อคลิป", "thumbnail_url": f"https://i.ytimg.com/vi/{VIDEO}/hqdefault.jpg"}}),
     ],
 )
-def test_details_excludes_nonpublic_and_all_streams(monkeypatch, privacy, live, replay):
+def test_details_excludes_nonpublic_and_all_streams(monkeypatch, privacy, live, replay, expected):
     from social.youtube import YouTube
 
     api = YouTube("fixture-key")
@@ -154,7 +154,7 @@ def test_details_excludes_nonpublic_and_all_streams(monkeypatch, privacy, live, 
     if replay:
         item["liveStreamingDetails"] = {"actualEndTime": "2026-10-15T10:00:00Z"}
     monkeypatch.setattr(api, "_get", lambda *a, **k: {"items": [item]})
-    assert api.details([VIDEO], CHANNEL) == {}
+    assert api.details([VIDEO], CHANNEL) == expected
 
 
 @pytest.mark.parametrize("mismatch", ["owner", "id", "duplicate"])

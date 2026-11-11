@@ -102,21 +102,79 @@ class Facebook:
                 raise ValueError("invalid_scheduled_at")
             fields["published"] = "false"
             fields["scheduled_publish_time"] = str(int(scheduled_at.timestamp()))
-        with Path(path).open("rb") as source:
-            body = MultipartEncoder(
-                fields={
-                    "source": ("original.mp4", source, "video/mp4"),
-                    **fields,
-                }
-            )
-            result = self._request(
-                "post",
-                f"https://graph-video.facebook.com/{self.version}/{self.page_id}/videos",
-                data=body,
-                headers={"Content-Type": body.content_type},
-                timeout=(10, 600),
-            )
-        return self._published_id(result.get("id"), "video")
+        endpoint = f"https://graph-video.facebook.com/{self.version}/{self.page_id}/videos"
+        path = Path(path)
+        file_size = path.stat().st_size
+        if file_size <= 0:
+            raise ValueError("invalid_video_file")
+
+        # Use Meta's resumable video upload protocol so large files aren't sent
+        # as one multipart request (which can be rejected at the HTTP layer).
+        start = self._request(
+            "post",
+            endpoint,
+            data={"upload_phase": "start", "file_size": str(file_size)},
+            timeout=(10, 60),
+        )
+        session_id = start.get("upload_session_id")
+        if not isinstance(session_id, (str, int)) or not str(session_id):
+            raise RuntimeError("facebook_invalid_response")
+        session_id = str(session_id)
+        video_id = start.get("video_id") or start.get("id")
+        start_offset, end_offset = self._upload_offsets(start, file_size)
+        if start_offset != 0:
+            raise RuntimeError("facebook_invalid_response")
+
+        with path.open("rb") as source:
+            while start_offset < end_offset:
+                source.seek(start_offset)
+                chunk = source.read(end_offset - start_offset)
+                if len(chunk) != end_offset - start_offset:
+                    raise RuntimeError("facebook_upload_file_changed")
+                body = MultipartEncoder(
+                    fields={
+                        "upload_phase": "transfer",
+                        "upload_session_id": session_id,
+                        "start_offset": str(start_offset),
+                        "video_file_chunk": (path.name, chunk, "video/mp4"),
+                    }
+                )
+                transferred = self._request(
+                    "post",
+                    endpoint,
+                    data=body,
+                    headers={"Content-Type": body.content_type},
+                    timeout=(10, 600),
+                )
+                next_start, next_end = self._upload_offsets(transferred, file_size)
+                if next_start <= start_offset or next_start < end_offset:
+                    raise RuntimeError("facebook_invalid_response")
+                start_offset, end_offset = next_start, next_end
+        if start_offset != file_size or end_offset != file_size:
+            raise RuntimeError("facebook_invalid_response")
+
+        finished = self._request(
+            "post",
+            endpoint,
+            data={
+                "upload_phase": "finish",
+                "upload_session_id": session_id,
+                **fields,
+            },
+            timeout=(10, 60),
+        )
+        return self._published_id(finished.get("video_id") or finished.get("id") or video_id, "video")
+
+    @staticmethod
+    def _upload_offsets(data: dict, file_size: int) -> tuple[int, int]:
+        try:
+            start = int(data["start_offset"])
+            end = int(data["end_offset"])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("facebook_invalid_response") from None
+        if start < 0 or end < start or end > file_size:
+            raise RuntimeError("facebook_invalid_response")
+        return start, end
 
     def verify_scheduled_video(self, remote_id: str, scheduled_at: datetime) -> bool:
         self._published_id(remote_id, "video")

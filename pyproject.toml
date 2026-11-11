@@ -11,6 +11,7 @@ dependencies = [
     "waitress>=3,<4",
     "tzdata>=2025.1",
     "yt-dlp>=2026.8.19",
+    "whitenoise>=6.12,<7",
 ]
 [dependency-groups]
 dev = ["pytest>=8,<10", "pytest-django>=4.9,<5", "responses>=0.25,<1", "pytest-socket>=0.7,<1", "ruff>=0.9,<1", "imageio-ffmpeg>=0.6,<1"]

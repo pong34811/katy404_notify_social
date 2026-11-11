@@ -79,7 +79,14 @@ class YouTube:
                     continue
                 if live != "none":
                     continue
-                if item.get("liveStreamingDetails") is not None:
+                live_details = item.get("liveStreamingDetails")
+                if live_details is not None and not (
+                    isinstance(live_details, dict)
+                    and isinstance(live_details.get("actualEndTime"), str)
+                    and live_details["actualEndTime"]
+                ):
+                    # Exclude active/upcoming/unfinished broadcasts, but include
+                    # public completed live replays from the uploads playlist.
                     continue
                 if not isinstance(snippet.get("title"), str):
                     raise ValueError("youtube_invalid_response")  # noqa: TRY004 - provider schema failure

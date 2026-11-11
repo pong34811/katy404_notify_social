@@ -5,6 +5,7 @@
 media/
 backups/
 .runtime/
+data/
 .pytest_cache/
 .ruff_cache/
 __pycache__/
